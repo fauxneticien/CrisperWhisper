@@ -5,13 +5,15 @@
 // each prompted with the last 12 confirmed words as "<ctx> ... <ectx>", and
 // trailing words that start inside the 4 s overlap dropped (at most 2), since
 // the next window hears them again. Not ported yet: early-EOT recovery,
-// temperature fallback and Viterbi word timing (word times here come from
-// Transformers.js' cross-attention DTW, so they carry no pauses).
+// temperature fallback and Viterbi word timing. Word times come from
+// Transformers.js' cross-attention DTW (no pauses); utterance start/end times
+// are then trimmed to speech regions from Silero VAD (vad.js).
 
 import {
   AutoProcessor, AutoTokenizer, WhisperForConditionalGeneration,
 } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.2/dist/transformers.min.js';
 import { buildEaf, downloadText, fileStem } from './eaf.js';
+import { SileroVAD, detectSpeech, trimToSpeech } from './vad.js';
 
 const MODEL_ID = 'Masterx/CrisperWhisper2.0-turbo-ONNX';
 const SAMPLE_RATE = 16000;
@@ -79,7 +81,7 @@ if (!hasWebGPU) {
   $('load-error').textContent = 'WebGPU is not available in this browser, so the model runs on the CPU (4-bit weights, much slower). Chrome, Edge or Safari 26 use the GPU.';
 }
 
-let processor, tokenizer, model;
+let processor, tokenizer, model, vad;
 try {
   const onProgress = p => {
     // Only show the large model files; config and tokenizer files are tiny.
@@ -93,10 +95,11 @@ try {
       row.querySelector('.label span:last-child').textContent = 'done';
     }
   };
-  [processor, tokenizer, model] = await Promise.all([
+  [processor, tokenizer, model, vad] = await Promise.all([
     AutoProcessor.from_pretrained(MODEL_ID),
     AutoTokenizer.from_pretrained(MODEL_ID),
     WhisperForConditionalGeneration.from_pretrained(MODEL_ID, { device, dtype, progress_callback: onProgress }),
+    SileroVAD.create(), // vendored Silero VAD v5.1.2 (2.3 MB, assets/)
   ]);
 } catch (err) {
   console.error(err);
@@ -182,7 +185,8 @@ function toSegments(words) {
     if (/[.?!…]["»”)]*$/.test(w.text)) { segments.push(cur); cur = []; }
   }
   if (cur.length) segments.push(cur);
-  return segments.map(ws => ({ start: ws[0].start, end: ws.at(-1).end, text: ws.map(w => w.text).join(' ') }));
+  // lastStart: start of the utterance's last word, the anchor for trimming its end to speech.
+  return segments.map(ws => ({ start: ws[0].start, end: ws.at(-1).end, lastStart: ws.at(-1).start, text: ws.map(w => w.text).join(' ') }));
 }
 
 function render() {
@@ -207,6 +211,17 @@ async function transcribeFile(file) {
     const ctx = new AudioContext({ sampleRate: SAMPLE_RATE });
     const audio = (await ctx.decodeAudioData(await file.arrayBuffer())).getChannelData(0);
     ctx.close();
+    // Speech regions (Silero VAD) for trimming utterance start/end times.
+    $('tprogress').hidden = false;
+    const vadStarted = performance.now();
+    const speech = await detectSpeech(vad, audio, f => {
+      $('tprogress-bar').style.width = `${(100 * f).toFixed(1)}%`;
+      $('tprogress-text').textContent = `Detecting speech: ${Math.round(100 * f)}%`;
+      $('tprogress-eta').textContent = '';
+    });
+    const vadSeconds = (performance.now() - vadStarted) / 1000;
+    console.info(`[vad] ${speech.length} speech regions in ${vadSeconds.toFixed(1)} s`);
+    const segmentsFrom = words => trimToSpeech(toSegments(words), speech);
     const total = audio.length / SAMPLE_RATE;
     const nWindows = total <= CHUNK_S ? 1 : Math.ceil((total - CHUNK_S) / STRIDE_S) + 1;
 
@@ -222,13 +237,13 @@ async function transcribeFile(file) {
       const words = await transcribeWindow(inputs, buildPrompt(langId, context), window.length / SAMPLE_RATE);
       const kept = words.slice(0, keepIndex(words, i === nWindows - 1));
       for (const w of kept) confirmed.push({ text: w.text, start: w.start + start, end: Math.min(w.end + start, total) });
-      state.segments = toSegments(confirmed);
+      state.segments = segmentsFrom(confirmed);
       render();
       showProgress(i + 1, nWindows, started);
     }
     // Keep the timeline monotonic at window seams.
     for (let i = 1; i < confirmed.length; i++) confirmed[i].start = Math.max(confirmed[i].start, confirmed[i - 1].start);
-    state.segments = toSegments(confirmed);
+    state.segments = segmentsFrom(confirmed);
     render();
     $('status').textContent = `Done: ${file.name}, ${formatClock(total)} of audio in ${((performance.now() - started) / 1000).toFixed(1)} s.`;
   } catch (err) {

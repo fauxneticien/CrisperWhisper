@@ -58,8 +58,11 @@
     (ONNX export <a href="https://huggingface.co/Masterx/CrisperWhisper2.0-turbo-ONNX">Masterx/CrisperWhisper2.0-turbo-ONNX</a>),
     licensed for <strong>non-commercial research use only</strong>, including the transcripts it produces
     (<a href="https://huggingface.co/nyralabs/CrisperWhisper2.0_turbo/blob/main/LICENSE.md">license</a>).
+    Utterance times are trimmed with <a href="https://github.com/snakers4/silero-vad">Silero VAD</a> v5.1.2 (MIT).
   </footer>
 </main>
+<!-- onnxruntime-web for Silero VAD (same pinned version as the vad-check app) -->
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/ort.wasm.min.js"></script>
 <script type="module" src="app.js"></script>
 </body>
 </html>
