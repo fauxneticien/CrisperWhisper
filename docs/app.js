@@ -145,6 +145,9 @@ async function transcribeWindow(inputs, prompt, windowDuration) {
   });
   const ids = Array.from(out.sequences.tolist()[0], Number).slice(prompt.length);
   const times = Array.from(out.token_timestamps.tolist()[0], Number).slice(prompt.length);
+  // return_token_timestamps makes generate() return a dict and keep the KV cache
+  // alive on the GPU; free it, or GPU memory grows with every window.
+  await out.past_key_values?.dispose?.();
   const words = [];
   ids.forEach((id, i) => {
     const piece = tokenizer.decode([id], { skip_special_tokens: false });
