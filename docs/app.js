@@ -1,10 +1,11 @@
 // CrisperWhisper 2.0 turbo in the browser: Transformers.js + ONNX Runtime Web.
 //
-// Long audio follows the Python package's default "continuation" strategy
-// (crisperwhisper/longform/continuation.py): 30 s windows advancing by 26 s,
-// each prompted with the last 12 confirmed words as "<ctx> ... <ectx>", and
-// trailing words that start inside the 4 s overlap dropped (at most 2), since
-// the next window hears them again. Not ported yet: early-EOT recovery,
+// Long audio: windows are cut at silences from Silero VAD (vad.js), so silence
+// is never decoded; stretches of speech longer than 30 s follow the Python
+// package's default "continuation" strategy (crisperwhisper/longform/
+// continuation.py): 30 s windows advancing by 26 s, trailing words that start
+// inside the 4 s overlap dropped (at most 2), and each overlapping window
+// prompted with the last 12 confirmed words as "<ctx> ... <ectx>". Not ported yet: early-EOT recovery,
 // temperature fallback and Viterbi word timing. Word times come from
 // Transformers.js' cross-attention DTW (no pauses); utterance start/end times
 // are then trimmed to speech regions from Silero VAD (vad.js).
@@ -22,6 +23,11 @@ const STRIDE_S = 26;       // LongformConfig.stride
 const CONTEXT_WORDS = 12;  // LongformConfig.context_words
 const DROP_WORDS = 2;      // LongformConfig.drop_words
 const MAX_NEW_TOKENS = 256;
+// Windows are cut at silences found by the VAD: a pause longer than this always
+// ends a window, so no window holds a long silence (the model tends to stop
+// decoding after one, losing the speech that follows).
+const MAX_GAP_S = 1.5;
+const EDGE_S = 1.0;        // audio kept around each window's speech (VAD can miss soft onsets like "Ah")
 const MODE_TAGS = '[verbatim_1][verbatim_2][verbatim_3][verbatim_4][verbatim_5]';
 // Alphabetical by name (the menu shows them in this order).
 const LANGUAGES = [
@@ -178,6 +184,35 @@ function keepIndex(words, isLast) {
   return Math.max(legacy, firstOverlap);
 }
 
+/**
+ * Decoding windows from speech regions (seconds): consecutive regions are joined
+ * while the gap between them is at most MAX_GAP_S and the window stays within
+ * CHUNK_S; silences are skipped entirely. A single stretch of speech longer than
+ * CHUNK_S is cut into the usual overlapping CHUNK_S / STRIDE_S windows, and only
+ * those get the overlap-aware trailing-word drop (`dropTail`).
+ */
+function planWindows(speech, total) {
+  const groups = [];
+  for (const r of speech) {
+    const g = groups.at(-1);
+    if (g && r.start - g.end <= MAX_GAP_S && r.end - g.start <= CHUNK_S) g.end = r.end;
+    else groups.push({ start: r.start, end: r.end });
+  }
+  const windows = [];
+  groups.forEach((g, i) => {
+    // Pad with a little audio, but never into the neighbouring windows' speech.
+    const lo = Math.max(0, g.start - EDGE_S, i > 0 ? groups[i - 1].end : 0);
+    const hi = Math.min(total, g.end + EDGE_S, i + 1 < groups.length ? groups[i + 1].start : total);
+    if (hi - lo <= CHUNK_S) { windows.push({ start: lo, end: hi, dropTail: false }); return; }
+    for (let s = lo; ; s += STRIDE_S) {
+      const e = Math.min(hi, s + CHUNK_S);
+      windows.push({ start: s, end: e, dropTail: e < hi });
+      if (e >= hi) break;
+    }
+  });
+  return windows;
+}
+
 /** Words -> utterances: a new row after sentence-final punctuation. */
 function toSegments(words) {
   const segments = [];
@@ -235,19 +270,28 @@ async function transcribeFile(file, track, prefix) {
     console.info(`[vad] ${speech.length} speech regions in ${vadSeconds.toFixed(1)} s`);
     const segmentsFrom = words => trimToSpeech(toSegments(words), speech);
     const total = audio.length / SAMPLE_RATE;
-    const nWindows = total <= CHUNK_S ? 1 : Math.ceil((total - CHUNK_S) / STRIDE_S) + 1;
+    const windows = planWindows(speech, total);
+    const nWindows = windows.length;
+    console.info(`[windows] ${nWindows} window(s) over ${speech.length} speech region(s)`);
 
     const langId = tokenId(`<|${$('language').value}|>`);
     const confirmed = [];
     for (let i = 0; i < nWindows; i++) {
-      const start = i * STRIDE_S;
-      const window = audio.subarray(Math.round(start * SAMPLE_RATE), Math.round(Math.min(total, start + CHUNK_S) * SAMPLE_RATE));
+      const { start, end, dropTail } = windows[i];
+      const window = audio.subarray(Math.round(start * SAMPLE_RATE), Math.round(end * SAMPLE_RATE));
       $('status').textContent = `${prefix}Transcribing ${file.name}…`;
       showProgress(i, nWindows, started, prefix);
       const inputs = await processor(window);
-      const context = i === 0 ? null : confirmed.slice(-CONTEXT_WORDS).map(w => w.text).join(' ') || null;
+      // "<ctx> ... <ectx>" only when this window continues a long stretch of speech
+      // split into overlapping windows (previous window has dropTail): the model was
+      // trained to hear those words again in the overlap and write what follows.
+      // Given context its audio doesn't contain (windows cut at silences, which only
+      // overlap by their silent margins), it skips ahead and drops whole utterances.
+      const continues = i > 0 && windows[i - 1].dropTail;
+      const context = continues ? confirmed.slice(-CONTEXT_WORDS).map(w => w.text).join(' ') || null : null;
       const words = await transcribeWindow(inputs, buildPrompt(langId, context), window.length / SAMPLE_RATE);
-      const kept = words.slice(0, keepIndex(words, i === nWindows - 1));
+      const kept = words.slice(0, keepIndex(words, !dropTail));
+      console.debug(`[window ${i + 1}/${nWindows}] ${formatClock(start)}-${formatClock(end)} ctx=${context ? 'yes' : 'no'} words=${words.length}: ${words.map(w => w.text).join(' ').slice(0, 160)}`);
       for (const w of kept) confirmed.push({ text: w.text, start: w.start + start, end: Math.min(w.end + start, total) });
       track.segments = segmentsFrom(confirmed);
       render();
