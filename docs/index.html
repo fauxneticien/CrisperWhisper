@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CrisperWhisper Transcriber</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <!-- Model loading: one-time download, cached by the browser afterwards -->
+  <section id="loading" class="card">
+    <h2 id="load-title">Loading the speech recognition model…</h2>
+    <p class="note">This is a <strong>one-time download</strong> of about 1.75 GB. Your browser keeps it, so later visits start in a few seconds.</p>
+    <div id="progress-list"></div>
+    <p id="load-error" class="error" hidden></p>
+  </section>
+
+  <!-- Drop area, shown once the model is ready -->
+  <section id="input" class="card" hidden>
+    <div class="row">
+      <label for="language">Language</label>
+      <select id="language"></select>
+    </div>
+    <label id="drop" class="drop">
+      <input id="file" type="file" accept="audio/*">
+      <span class="icon" aria-hidden="true">⬆</span>
+      <span>Drag &amp; drop an audio file here, or click to select</span>
+      <span class="hint">.wav, .mp3, .ogg, .m4a</span>
+    </label>
+    <p id="status" class="status"></p>
+  </section>
+
+  <!-- Transcription table -->
+  <section id="output" class="card" hidden>
+    <div class="row between">
+      <h2>Transcription</h2>
+      <div class="buttons">
+        <button id="eaf" class="primary">Download .eaf</button>
+        <button id="copy" title="Copy as tab-separated start, end, text (seconds)">Copy</button>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Start</th><th>End</th><th>Text</th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer>
+    Runs entirely in your browser; audio never leaves your computer.
+    Model: <a href="https://huggingface.co/nyralabs/CrisperWhisper2.0_turbo">CrisperWhisper 2.0 turbo</a>
+    (ONNX export <a href="https://huggingface.co/Masterx/CrisperWhisper2.0-turbo-ONNX">Masterx/CrisperWhisper2.0-turbo-ONNX</a>),
+    licensed for <strong>non-commercial research use only</strong>, including the transcripts it produces
+    (<a href="https://huggingface.co/nyralabs/CrisperWhisper2.0_turbo/blob/main/LICENSE.md">license</a>).
+  </footer>
+</main>
+<script type="module" src="app.js"></script>
+</body>
+</html>
