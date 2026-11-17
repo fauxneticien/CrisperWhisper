@@ -23,12 +23,14 @@ const CONTEXT_WORDS = 12;  // LongformConfig.context_words
 const DROP_WORDS = 2;      // LongformConfig.drop_words
 const MAX_NEW_TOKENS = 256;
 const MODE_TAGS = '[verbatim_1][verbatim_2][verbatim_3][verbatim_4][verbatim_5]';
+// Alphabetical by name (the menu shows them in this order).
 const LANGUAGES = [
-  ['fr', 'French'], ['en', 'English'], ['de', 'German'], ['es', 'Spanish'],
-  ['it', 'Italian'], ['pt', 'Portuguese'], ['nl', 'Dutch'], ['pl', 'Polish'], ['sv', 'Swedish'], ['da', 'Danish'],
-  ['no', 'Norwegian'], ['fi', 'Finnish'], ['cs', 'Czech'], ['ro', 'Romanian'], ['hu', 'Hungarian'], ['el', 'Greek'],
-  ['ru', 'Russian'], ['uk', 'Ukrainian'], ['tr', 'Turkish'], ['ca', 'Catalan'],
+  ['ca', 'Catalan'], ['cs', 'Czech'], ['da', 'Danish'], ['nl', 'Dutch'], ['en', 'English'], ['fi', 'Finnish'],
+  ['fr', 'French'], ['de', 'German'], ['el', 'Greek'], ['hu', 'Hungarian'], ['it', 'Italian'], ['no', 'Norwegian'],
+  ['pl', 'Polish'], ['pt', 'Portuguese'], ['ro', 'Romanian'], ['ru', 'Russian'], ['es', 'Spanish'], ['sv', 'Swedish'],
+  ['tr', 'Turkish'], ['uk', 'Ukrainian'],
 ];
+const DEFAULT_LANGUAGE = 'en';
 // Prompt and control tokens that never belong in the transcript.
 const CONTROL_TOKEN = /^(<\|[^|]*\|>|\[(verbatim|intended)_\d+\]|<\/?e?(ctx|htx|vtx)>)$/;
 
@@ -119,13 +121,12 @@ for (const [code, name] of LANGUAGES) {
   $('language').add(opt);
 }
 // The model has no language detection (the Python package always takes a
-// language too): default to the last choice, else the browser's language.
+// language too): English unless this browser picked another one before.
 const LANG_KEY = 'crisperwhisper.language';
 let savedLang = null;
 try { savedLang = localStorage.getItem(LANG_KEY); } catch {}
-const browserLang = (navigator.language || '').slice(0, 2);
 const known = c => LANGUAGES.some(([code]) => code === c);
-$('language').value = known(savedLang) ? savedLang : known(browserLang) ? browserLang : 'en';
+$('language').value = known(savedLang) ? savedLang : DEFAULT_LANGUAGE;
 $('language').addEventListener('change', () => { try { localStorage.setItem(LANG_KEY, $('language').value); } catch {} });
 
 $('loading').hidden = true;
