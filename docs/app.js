@@ -39,6 +39,21 @@ function formatClock(seconds) {
   return `${m}:${(seconds - m * 60).toFixed(2).padStart(5, '0')}`;
 }
 function formatMB(bytes) { return `${(bytes / 1e6).toFixed(0)} MB`; }
+function formatDuration(seconds) {
+  const s = Math.max(0, Math.round(seconds));
+  return s < 60 ? `${s} s` : `${Math.floor(s / 60)} min ${String(s % 60).padStart(2, '0')} s`;
+}
+
+/** Transcription progress: windows done out of total, with a time estimate from the average window. */
+function showProgress(done, total, startedMs) {
+  $('tprogress').hidden = false;
+  $('tprogress-bar').style.width = `${(100 * done / total).toFixed(1)}%`;
+  $('tprogress-text').textContent = `Transcribing: ${done} of ${total} windows (${Math.round(100 * done / total)}%)`;
+  const elapsed = (performance.now() - startedMs) / 1000;
+  $('tprogress-eta').textContent = done > 0 && done < total
+    ? `about ${formatDuration(elapsed / done * (total - done))} left`
+    : done === 0 ? 'starting…' : '';
+}
 
 function progressRow(file) {
   let row = document.querySelector(`.progress[data-file="${CSS.escape(file)}"]`);
@@ -197,7 +212,8 @@ async function transcribeFile(file) {
     for (let i = 0; i < nWindows; i++) {
       const start = i * STRIDE_S;
       const window = audio.subarray(Math.round(start * SAMPLE_RATE), Math.round(Math.min(total, start + CHUNK_S) * SAMPLE_RATE));
-      $('status').textContent = `Transcribing ${file.name}: window ${i + 1} of ${nWindows}…`;
+      $('status').textContent = `Transcribing ${file.name}…`;
+      showProgress(i, nWindows, started);
       const inputs = await processor(window);
       const context = i === 0 ? null : confirmed.slice(-CONTEXT_WORDS).map(w => w.text).join(' ') || null;
       const words = await transcribeWindow(inputs, buildPrompt(langId, context), window.length / SAMPLE_RATE);
@@ -205,6 +221,7 @@ async function transcribeFile(file) {
       for (const w of kept) confirmed.push({ text: w.text, start: w.start + start, end: Math.min(w.end + start, total) });
       state.segments = toSegments(confirmed);
       render();
+      showProgress(i + 1, nWindows, started);
     }
     // Keep the timeline monotonic at window seams.
     for (let i = 1; i < confirmed.length; i++) confirmed[i].start = Math.max(confirmed[i].start, confirmed[i - 1].start);
@@ -216,6 +233,7 @@ async function transcribeFile(file) {
     $('status').textContent = `Transcription failed: ${err.message || err}`;
   } finally {
     $('drop').classList.remove('busy');
+    $('tprogress').hidden = true;
     $('file').value = '';
   }
 }
