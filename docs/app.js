@@ -35,7 +35,8 @@ const DEFAULT_LANGUAGE = 'en';
 const CONTROL_TOKEN = /^(<\|[^|]*\|>|\[(verbatim|intended)_\d+\]|<\/?e?(ctx|htx|vtx)>)$/;
 
 const $ = id => document.getElementById(id);
-const state = { segments: [], fileName: '' };
+// One track per input file (one speaker each): { fileName, tier, segments }.
+const state = { tracks: [] };
 
 // ---------- helpers ----------
 function formatClock(seconds) {
@@ -49,10 +50,10 @@ function formatDuration(seconds) {
 }
 
 /** Transcription progress: windows done out of total, with a time estimate from the average window. */
-function showProgress(done, total, startedMs) {
+function showProgress(done, total, startedMs, prefix = '') {
   $('tprogress').hidden = false;
   $('tprogress-bar').style.width = `${(100 * done / total).toFixed(1)}%`;
-  $('tprogress-text').textContent = `Transcribing: ${done} of ${total} windows (${Math.round(100 * done / total)}%)`;
+  $('tprogress-text').textContent = `${prefix}Transcribing: ${done} of ${total} windows (${Math.round(100 * done / total)}%)`;
   const elapsed = (performance.now() - startedMs) / 1000;
   $('tprogress-eta').textContent = done > 0 && done < total
     ? `about ${formatDuration(elapsed / done * (total - done))} left`
@@ -190,25 +191,35 @@ function toSegments(words) {
   return segments.map(ws => ({ start: ws[0].start, end: ws.at(-1).end, lastStart: ws.at(-1).start, text: ws.map(w => w.text).join(' ') }));
 }
 
+/** All utterances of all tracks, in time order, each tagged with its tier. */
+function allRows() {
+  return state.tracks
+    .flatMap(t => t.segments.map(sg => ({ ...sg, tier: t.tier })))
+    .sort((a, b) => a.start - b.start || a.end - b.end);
+}
+
 function render() {
   const tbody = $('rows');
   tbody.textContent = '';
-  for (const sg of state.segments) {
+  const multi = state.tracks.length > 1;
+  $('tier-col').hidden = !multi;
+  const rows = allRows();
+  for (const sg of rows) {
     const tr = tbody.insertRow();
+    if (multi) { const c = tr.insertCell(); c.textContent = sg.tier; c.className = 'tier'; }
     tr.insertCell().textContent = formatClock(sg.start);
     tr.insertCell().textContent = formatClock(sg.end);
     tr.insertCell().textContent = sg.text;
-    tr.cells[0].className = tr.cells[1].className = 't';
+    tr.cells[multi ? 1 : 0].className = tr.cells[multi ? 2 : 1].className = 't';
   }
-  $('output').hidden = state.segments.length === 0;
+  $('output').hidden = rows.length === 0;
 }
 
-async function transcribeFile(file) {
-  $('drop').classList.add('busy');
-  $('status').textContent = `Decoding ${file.name}…`;
-  state.segments = []; state.fileName = file.name; render();
+/** Transcribe one file into `track.segments` (rendered as it goes). */
+async function transcribeFile(file, track, prefix) {
+  $('status').textContent = `${prefix}Decoding ${file.name}…`;
   const started = performance.now();
-  try {
+  {
     const ctx = new AudioContext({ sampleRate: SAMPLE_RATE });
     const audio = (await ctx.decodeAudioData(await file.arrayBuffer())).getChannelData(0);
     ctx.close();
@@ -217,7 +228,7 @@ async function transcribeFile(file) {
     const vadStarted = performance.now();
     const speech = await detectSpeech(vad, audio, f => {
       $('tprogress-bar').style.width = `${(100 * f).toFixed(1)}%`;
-      $('tprogress-text').textContent = `Detecting speech: ${Math.round(100 * f)}%`;
+      $('tprogress-text').textContent = `${prefix}Detecting speech: ${Math.round(100 * f)}%`;
       $('tprogress-eta').textContent = '';
     });
     const vadSeconds = (performance.now() - vadStarted) / 1000;
@@ -231,22 +242,61 @@ async function transcribeFile(file) {
     for (let i = 0; i < nWindows; i++) {
       const start = i * STRIDE_S;
       const window = audio.subarray(Math.round(start * SAMPLE_RATE), Math.round(Math.min(total, start + CHUNK_S) * SAMPLE_RATE));
-      $('status').textContent = `Transcribing ${file.name}…`;
-      showProgress(i, nWindows, started);
+      $('status').textContent = `${prefix}Transcribing ${file.name}…`;
+      showProgress(i, nWindows, started, prefix);
       const inputs = await processor(window);
       const context = i === 0 ? null : confirmed.slice(-CONTEXT_WORDS).map(w => w.text).join(' ') || null;
       const words = await transcribeWindow(inputs, buildPrompt(langId, context), window.length / SAMPLE_RATE);
       const kept = words.slice(0, keepIndex(words, i === nWindows - 1));
       for (const w of kept) confirmed.push({ text: w.text, start: w.start + start, end: Math.min(w.end + start, total) });
-      state.segments = segmentsFrom(confirmed);
+      track.segments = segmentsFrom(confirmed);
       render();
-      showProgress(i + 1, nWindows, started);
+      showProgress(i + 1, nWindows, started, prefix);
     }
     // Keep the timeline monotonic at window seams.
     for (let i = 1; i < confirmed.length; i++) confirmed[i].start = Math.max(confirmed[i].start, confirmed[i - 1].start);
-    state.segments = segmentsFrom(confirmed);
+    track.segments = segmentsFrom(confirmed);
     render();
-    $('status').textContent = `Done: ${file.name}, ${formatClock(total)} of audio in ${((performance.now() - started) / 1000).toFixed(1)} s.`;
+    return total;
+  }
+}
+
+/** Tier names from file names; unique, since EAF tier IDs must be. */
+function tierNames(files) {
+  const seen = new Map();
+  return files.map(f => {
+    const stem = fileStem(f.name);
+    const n = (seen.get(stem) || 0) + 1;
+    seen.set(stem, n);
+    return n === 1 ? stem : `${stem} (${n})`;
+  });
+}
+
+/** Name for the .eaf: the file's stem, or the common start of all stems. */
+function eafName() {
+  const stems = state.tracks.map(t => fileStem(t.fileName));
+  if (stems.length === 1) return stems[0];
+  let prefix = stems[0];
+  for (const s of stems) while (!s.startsWith(prefix)) prefix = prefix.slice(0, -1);
+  return prefix.replace(/[\s_.-]+$/, '') || 'transcription';
+}
+
+async function transcribeFiles(fileList) {
+  const files = [...fileList];
+  if (!files.length) return;
+  const names = tierNames(files);
+  state.tracks = files.map((f, i) => ({ fileName: f.name, tier: names[i], segments: [] }));
+  render();
+  $('drop').classList.add('busy');
+  const started = performance.now();
+  let audioSeconds = 0;
+  try {
+    for (let i = 0; i < files.length; i++) {
+      const prefix = files.length > 1 ? `File ${i + 1} of ${files.length} · ` : '';
+      audioSeconds += await transcribeFile(files[i], state.tracks[i], prefix);
+    }
+    const what = files.length > 1 ? `${files.length} files` : files[0].name;
+    $('status').textContent = `Done: ${what}, ${formatClock(audioSeconds)} of audio in ${((performance.now() - started) / 1000).toFixed(1)} s.`;
   } catch (err) {
     console.error(err);
     $('status').textContent = `Transcription failed: ${err.message || err}`;
@@ -258,19 +308,22 @@ async function transcribeFile(file) {
 }
 
 // ---------- UI wiring ----------
-$('file').addEventListener('change', e => { const f = e.target.files?.[0]; if (f) transcribeFile(f); });
+$('file').addEventListener('change', e => transcribeFiles(e.target.files || []));
 for (const ev of ['dragenter', 'dragover']) $('drop').addEventListener(ev, e => { e.preventDefault(); $('drop').classList.add('over'); });
 for (const ev of ['dragleave', 'drop']) $('drop').addEventListener(ev, () => $('drop').classList.remove('over'));
 $('drop').addEventListener('drop', e => {
   e.preventDefault();
-  const f = e.dataTransfer?.files?.[0];
-  if (f) transcribeFile(f);
+  transcribeFiles(e.dataTransfer?.files || []);
 });
 $('eaf').addEventListener('click', () => {
-  const xml = buildEaf([{ name: fileStem(state.fileName), mediaFileName: state.fileName, segments: state.segments }]);
-  downloadText(xml, `${fileStem(state.fileName)}.eaf`);
+  // One tier per file, named after it; every file linked as media.
+  const xml = buildEaf(state.tracks.map(t => ({ name: t.tier, mediaFileName: t.fileName, segments: t.segments })));
+  downloadText(xml, `${eafName()}.eaf`);
 });
 $('copy').addEventListener('click', () => {
-  const tsv = ['start\tend\ttext', ...state.segments.map(s => `${s.start.toFixed(2)}\t${s.end.toFixed(2)}\t${s.text}`)].join('\n');
+  const multi = state.tracks.length > 1;
+  const head = multi ? 'tier\tstart\tend\ttext' : 'start\tend\ttext';
+  const lines = allRows().map(s => `${multi ? `${s.tier}\t` : ''}${s.start.toFixed(2)}\t${s.end.toFixed(2)}\t${s.text}`);
+  const tsv = [head, ...lines].join('\n');
   navigator.clipboard.writeText(tsv);
 });

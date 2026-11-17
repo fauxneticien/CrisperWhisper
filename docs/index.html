@@ -23,9 +23,10 @@
       <select id="language"></select>
     </div>
     <label id="drop" class="drop">
-      <input id="file" type="file" accept="audio/*">
+      <input id="file" type="file" accept="audio/*" multiple>
       <span class="icon" aria-hidden="true">⬆</span>
-      <span>Drag &amp; drop an audio file here, or click to select</span>
+      <span>Drag &amp; drop audio files here, or click to select</span>
+      <span class="hint">One file per speaker: each file becomes a tier, named after the file</span>
       <span class="hint">.wav, .mp3, .ogg, .m4a</span>
     </label>
     <div id="tprogress" class="progress" hidden>
@@ -46,7 +47,7 @@
     </div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Start</th><th>End</th><th>Text</th></tr></thead>
+        <thead><tr><th id="tier-col" hidden>Tier</th><th>Start</th><th>End</th><th>Text</th></tr></thead>
         <tbody id="rows"></tbody>
       </table>
     </div>

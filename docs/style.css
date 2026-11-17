@@ -53,6 +53,7 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 table { width: 100%; border-collapse: collapse; font-size: .9rem; }
 th { position: sticky; top: 0; background: var(--card); text-align: left; font-size: .7rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
 th, td { padding: .45rem .75rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+td.tier { font-size: .8rem; color: var(--muted); white-space: nowrap; }
 td.t { font-family: ui-monospace, monospace; font-size: .8rem; color: var(--muted); white-space: nowrap; width: 6.5rem; }
 
 footer { color: var(--muted); font-size: .8rem; text-align: center; }
